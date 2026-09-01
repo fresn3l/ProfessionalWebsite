@@ -56,9 +56,14 @@ export async function POST(request: Request) {
       message,
     });
   } catch (err: unknown) {
+    const message =
+      err instanceof Error ? err.message : "Failed to store inquiry";
+    const unavailable =
+      message.includes("Production") ||
+      message.includes("SUPABASE_SERVICE_ROLE_KEY");
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to store inquiry" },
-      { status: 500 },
+      { error: message },
+      { status: unavailable ? 503 : 500 },
     );
   }
 
