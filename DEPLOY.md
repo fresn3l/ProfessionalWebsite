@@ -39,7 +39,8 @@ Local JSON saves do **not** persist on Vercel. Production editing requires Supab
 
 Production behavior:
 - Local password admin is **disabled** unless `ALLOW_LOCAL_ADMIN=true`
-- Saves fail clearly if Supabase is missing
+- Saves, contact storage, and media uploads fail clearly if Supabase or `SUPABASE_SERVICE_ROLE_KEY` is missing
+- Local disk fallbacks (`data/site.json`, `public/uploads/`) are **not** used in production
 
 ## 4. SEO (shipped in the app)
 
@@ -86,7 +87,12 @@ SUPABASE_SERVICE_ROLE_KEY=...
 ADMIN_SESSION_SECRET=<long random string>
 RESEND_API_KEY=...          # optional
 CONTACT_TO_EMAIL=...        # optional
+RESEND_FROM=Portfolio Contact <hello@yourdomain.com>  # optional; must be a verified Resend sender
 NEXT_PUBLIC_PLAUSIBLE_DOMAIN=yourdomain.com  # optional
 ```
 
 Do **not** set `ALLOW_LOCAL_ADMIN=true` in production unless you have a deliberate reason.
+
+`SUPABASE_SERVICE_ROLE_KEY` is required for production editor saves, contact-lead inserts, and media uploads. Missing it returns a clear error instead of falling back to the anon key or the local filesystem.
+
+Contact form rate limiting is in-memory (5 submissions per IP per 15 minutes **per serverless instance**). Admin-only `GET /api/leads` lists stored inquiries; they are never included in `GET`/`PUT /api/site`.

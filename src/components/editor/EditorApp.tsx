@@ -28,8 +28,11 @@ export function EditorApp() {
 
   useEffect(() => {
     fetch("/api/site")
-      .then((r) => r.json())
-      .then((d: SiteData) => {
+      .then(async (r) => {
+        if (!r.ok) throw new Error("Failed to load site data");
+        return r.json() as Promise<SiteData>;
+      })
+      .then((d) => {
         setData(d);
         setPageId(d.pages[0]?.id ?? null);
       })

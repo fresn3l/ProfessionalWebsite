@@ -1,6 +1,9 @@
 import { cookies } from "next/headers";
 import { createHash, timingSafeEqual } from "crypto";
-import { isSupabaseConfigured } from "@/lib/content/repository";
+import {
+  isSupabaseConfigured,
+  PRODUCTION_SUPABASE_REQUIRED_MESSAGE,
+} from "@/lib/supabase/admin";
 
 const COOKIE_NAME = "bb_admin_session";
 
@@ -16,7 +19,7 @@ export function allowLocalAdmin(): boolean {
 
 export function requireSupabaseInProduction(): string | null {
   if (process.env.NODE_ENV === "production" && !isSupabaseConfigured()) {
-    return "Production requires Supabase. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.";
+    return PRODUCTION_SUPABASE_REQUIRED_MESSAGE;
   }
   return null;
 }
