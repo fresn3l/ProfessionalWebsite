@@ -1,6 +1,5 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { createClient } from "@supabase/supabase-js";
 import { seedData } from "./seed";
 import type {
   ContactLead,
@@ -12,6 +11,12 @@ import type {
 import { ensureTheme } from "@/lib/theme";
 import { ensureResume } from "./resume";
 import { ensureProjects } from "./projects";
+import {
+  createAdminClient,
+  isProduction,
+  isSupabaseConfigured,
+  SERVICE_ROLE_REQUIRED_MESSAGE,
+} from "@/lib/supabase/admin";
 
 const DATA_PATH = path.join(process.cwd(), "data", "site.json");
 
@@ -32,19 +37,27 @@ function normalizeSiteData(data: SiteData): SiteData {
   };
 }
 
-function isSupabaseConfigured() {
-  return Boolean(
-    process.env.NEXT_PUBLIC_SUPABASE_URL &&
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-  );
+function mapLead(l: {
+  id: string;
+  name: string;
+  email: string;
+  company?: string | null;
+  message: string;
+  created_at: string;
+}): ContactLead {
+  return {
+    id: l.id,
+    name: l.name,
+    email: l.email,
+    company: l.company ?? undefined,
+    message: l.message,
+    createdAt: l.created_at,
+  };
 }
 
-function adminClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  return createClient(url, key);
+/** Editor/API payloads must never include contact leads. */
+export function withoutLeads(data: SiteData): SiteData {
+  return { ...data, leads: [] };
 }
 
 async function ensureLocalFile(): Promise<SiteData> {
@@ -58,6 +71,16 @@ async function ensureLocalFile(): Promise<SiteData> {
   }
 }
 
+async function readLocalLeads(): Promise<ContactLead[]> {
+  try {
+    const raw = await fs.readFile(DATA_PATH, "utf8");
+    const existing = JSON.parse(raw) as SiteData;
+    return existing.leads || [];
+  } catch {
+    return [];
+  }
+}
+
 async function writeLocal(data: SiteData) {
   await fs.mkdir(path.dirname(DATA_PATH), { recursive: true });
   await fs.writeFile(DATA_PATH, JSON.stringify(data, null, 2), "utf8");
@@ -65,13 +88,12 @@ async function writeLocal(data: SiteData) {
 
 async function loadFromSupabase(): Promise<SiteData | null> {
   try {
-    const sb = adminClient();
-    const [{ data: settingsRow }, { data: pages }, { data: posts }, { data: leads }] =
+    const sb = createAdminClient();
+    const [{ data: settingsRow }, { data: pages }, { data: posts }] =
       await Promise.all([
         sb.from("site_settings").select("data").eq("id", 1).maybeSingle(),
         sb.from("pages").select("*").order("slug"),
         sb.from("posts").select("*").order("published_at", { ascending: false }),
-        sb.from("leads").select("*").order("created_at", { ascending: false }),
       ]);
 
     if (!settingsRow?.data) return null;
@@ -124,23 +146,22 @@ async function loadFromSupabase(): Promise<SiteData | null> {
         published: p.published,
         publishedAt: p.published_at,
       })),
-      leads: (leads || []).map((l) => ({
-        id: l.id,
-        name: l.name,
-        email: l.email,
-        company: l.company ?? undefined,
-        message: l.message,
-        createdAt: l.created_at,
-      })),
+      leads: [],
     };
-  } catch {
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      err.message === SERVICE_ROLE_REQUIRED_MESSAGE
+    ) {
+      throw err;
+    }
     return null;
   }
 }
 
 async function saveToSupabase(data: SiteData) {
-  const sb = adminClient();
-  await sb.from("site_settings").upsert({
+  const sb = createAdminClient();
+  const { error: settingsError } = await sb.from("site_settings").upsert({
     id: 1,
     data: {
       settings: data.settings,
@@ -149,9 +170,12 @@ async function saveToSupabase(data: SiteData) {
     },
     updated_at: new Date().toISOString(),
   });
+  if (settingsError) {
+    throw new Error(settingsError.message);
+  }
 
   for (const page of data.pages) {
-    await sb.from("pages").upsert({
+    const { error } = await sb.from("pages").upsert({
       id: page.id,
       slug: page.slug,
       title: page.title,
@@ -160,10 +184,11 @@ async function saveToSupabase(data: SiteData) {
       blocks: page.blocks,
       updated_at: page.updatedAt,
     });
+    if (error) throw new Error(error.message);
   }
 
   for (const post of data.posts) {
-    await sb.from("posts").upsert({
+    const { error } = await sb.from("posts").upsert({
       id: post.id,
       slug: post.slug,
       title: post.title,
@@ -175,6 +200,33 @@ async function saveToSupabase(data: SiteData) {
       published: post.published,
       published_at: post.publishedAt,
     });
+    if (error) throw new Error(error.message);
+  }
+
+  const pageIds = data.pages.map((p) => p.id);
+  const { data: existingPages, error: pageListError } = await sb
+    .from("pages")
+    .select("id");
+  if (pageListError) throw new Error(pageListError.message);
+  const stalePageIds = (existingPages || [])
+    .map((p) => p.id as string)
+    .filter((id) => !pageIds.includes(id));
+  if (stalePageIds.length > 0) {
+    const { error } = await sb.from("pages").delete().in("id", stalePageIds);
+    if (error) throw new Error(error.message);
+  }
+
+  const postIds = data.posts.map((p) => p.id);
+  const { data: existingPosts, error: postListError } = await sb
+    .from("posts")
+    .select("id");
+  if (postListError) throw new Error(postListError.message);
+  const stalePostIds = (existingPosts || [])
+    .map((p) => p.id as string)
+    .filter((id) => !postIds.includes(id));
+  if (stalePostIds.length > 0) {
+    const { error } = await sb.from("posts").delete().in("id", stalePostIds);
+    if (error) throw new Error(error.message);
   }
 }
 
@@ -187,17 +239,19 @@ export async function getSiteData(): Promise<SiteData> {
 }
 
 export async function saveSiteData(data: SiteData): Promise<SiteData> {
+  const preservedLeads = isSupabaseConfigured() ? [] : await readLocalLeads();
   const next = normalizeSiteData({
     ...data,
+    leads: preservedLeads,
     pages: data.pages.map((p) => ({
       ...p,
       updatedAt: new Date().toISOString(),
     })),
   });
 
-  const isProd = process.env.NODE_ENV === "production";
+  const prod = isProduction();
 
-  if (isProd && !isSupabaseConfigured()) {
+  if (prod && !isSupabaseConfigured()) {
     throw new Error(
       "Production saves require Supabase. Set NEXT_PUBLIC_SUPABASE_URL and keys.",
     );
@@ -205,15 +259,15 @@ export async function saveSiteData(data: SiteData): Promise<SiteData> {
 
   if (isSupabaseConfigured()) {
     await saveToSupabase(next);
-    // Still mirror locally in development for easy inspection.
-    if (!isProd) {
-      await writeLocal(next);
+    if (!prod) {
+      const localLeads = await readLocalLeads();
+      await writeLocal({ ...next, leads: localLeads });
     }
-    return next;
+    return withoutLeads(next);
   }
 
   await writeLocal(next);
-  return next;
+  return withoutLeads(next);
 }
 
 export async function getSettings(): Promise<SiteSettings> {
@@ -247,6 +301,20 @@ export async function getPostBySlug(slug: string): Promise<Post | null> {
   return data.posts.find((p) => p.slug === slug && p.published) ?? null;
 }
 
+export async function getLeads(): Promise<ContactLead[]> {
+  if (isSupabaseConfigured()) {
+    const sb = createAdminClient();
+    const { data, error } = await sb
+      .from("leads")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) throw new Error(error.message);
+    return (data || []).map(mapLead);
+  }
+  const data = await ensureLocalFile();
+  return data.leads || [];
+}
+
 export async function addLead(
   lead: Omit<ContactLead, "id" | "createdAt">,
 ): Promise<ContactLead> {
@@ -257,22 +325,37 @@ export async function addLead(
   };
 
   if (isSupabaseConfigured()) {
-    try {
-      const sb = adminClient();
-      await sb.from("leads").insert({
-        id: entry.id,
-        name: entry.name,
-        email: entry.email,
-        company: entry.company ?? null,
-        message: entry.message,
-        created_at: entry.createdAt,
-      });
-    } catch {
-      // local fallback below
+    const sb = createAdminClient();
+    const { error } = await sb.from("leads").insert({
+      id: entry.id,
+      name: entry.name,
+      email: entry.email,
+      company: entry.company ?? null,
+      message: entry.message,
+      created_at: entry.createdAt,
+    });
+    if (error) {
+      throw new Error(error.message || "Failed to store lead");
     }
+    if (!isProduction()) {
+      try {
+        const data = await ensureLocalFile();
+        data.leads = [entry, ...data.leads];
+        await writeLocal(data);
+      } catch {
+        // Local mirror is optional in development.
+      }
+    }
+    return entry;
   }
 
-  const data = await getSiteData();
+  if (isProduction()) {
+    throw new Error(
+      "Production contact requires Supabase. Set NEXT_PUBLIC_SUPABASE_URL and keys.",
+    );
+  }
+
+  const data = await ensureLocalFile();
   data.leads = [entry, ...data.leads];
   await writeLocal(data);
   return entry;

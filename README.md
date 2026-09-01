@@ -40,9 +40,10 @@ See [`.env.local.example`](.env.local.example).
 | `ALLOW_LOCAL_ADMIN` | Set `true` only to force local admin in production (not recommended) |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-side writes / storage (keep secret) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Required in production for saves, leads, and uploads (keep secret) |
 | `NEXT_PUBLIC_PLAUSIBLE_DOMAIN` | Optional Plausible analytics domain |
 | `RESEND_API_KEY` / `CONTACT_TO_EMAIL` | Optional email delivery for the contact form |
+| `RESEND_FROM` | Optional verified Resend From address |
 
 Without Supabase, content persists to `data/site.json` and uploads go to `public/uploads/`.
 

@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
-import { getSiteData, saveSiteData } from "@/lib/content/repository";
+import {
+  getSiteData,
+  saveSiteData,
+  withoutLeads,
+} from "@/lib/content/repository";
 import { isAdminAuthenticated } from "@/lib/auth";
 import type { SiteData } from "@/lib/content/types";
 
 export async function GET() {
+  const ok = await isAdminAuthenticated();
+  if (!ok) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const data = await getSiteData();
-  return NextResponse.json(data);
+  return NextResponse.json(withoutLeads(data));
 }
 
 export async function PUT(request: Request) {
@@ -19,19 +28,19 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
-  const saved = await saveSiteData({
-    ...body,
-    resume: body.resume,
-    projects: body.projects ?? [],
-    posts: body.posts ?? [],
-    leads: body.leads ?? [],
-  }).catch((err: unknown) => {
+  try {
+    const saved = await saveSiteData({
+      ...body,
+      resume: body.resume,
+      projects: body.projects ?? [],
+      posts: body.posts ?? [],
+      leads: [],
+    });
+    return NextResponse.json(withoutLeads(saved));
+  } catch (err: unknown) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Save failed" },
       { status: 500 },
     );
-  });
-
-  if (saved instanceof NextResponse) return saved;
-  return NextResponse.json(saved);
+  }
 }
